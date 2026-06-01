@@ -18,16 +18,19 @@ namespace {
 struct Options {
   int timeout_s = 30;
   int camera = 0;
-  std::string cascade;
+  std::string frontalCascade;
+  std::string profileCascade;
 };
 
 void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s [--timeout <seconds>] [--camera <index>] "
-          "[--cascade <path>]\n"
-          "  --timeout  seconds with no face before locking (default 30)\n"
-          "  --camera   V4L2 camera index (default 0)\n"
-          "  --cascade  haar cascade XML path (default: bundled cascade)\n",
+          "[--frontal-cascade <path>] [--profile-cascade <path>]\n"
+          "  --timeout          seconds with no face before locking (default 30)\n"
+          "  --camera           V4L2 camera index (default 0)\n"
+          "  --frontal-cascade  frontal haar cascade XML path (default: bundled cascade)\n"
+          "  --profile-cascade  profile haar cascade XML path (default: OpenCV data dir)\n"
+          "  --cascade          deprecated alias for --frontal-cascade\n",
           prog);
 }
 
@@ -58,12 +61,26 @@ bool parseArgs(int argc, char **argv, Options &opt) {
         return false;
       }
       opt.camera = atoi(v);
-    } else if (strcmp(argv[i], "--cascade") == 0) {
+    } else if (strcmp(argv[i], "--frontal-cascade") == 0) {
       const char *v = takeArg(argc, argv, i);
       if (v == nullptr) {
         return false;
       }
-      opt.cascade = v;
+      opt.frontalCascade = v;
+    } else if (strcmp(argv[i], "--cascade") == 0) {
+      fprintf(stderr,
+              "lockd: --cascade is deprecated, use --frontal-cascade\n");
+      const char *v = takeArg(argc, argv, i);
+      if (v == nullptr) {
+        return false;
+      }
+      opt.frontalCascade = v;
+    } else if (strcmp(argv[i], "--profile-cascade") == 0) {
+      const char *v = takeArg(argc, argv, i);
+      if (v == nullptr) {
+        return false;
+      }
+      opt.profileCascade = v;
     } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       usage(argv[0]);
       exit(0);
@@ -78,7 +95,7 @@ bool parseArgs(int argc, char **argv, Options &opt) {
 
 // Locates the bundled haar cascade. LOCKD_CASCADE_PATH is set at build time to
 // the install location; a few common spots are tried as a fallback.
-std::string defaultCascade() {
+std::string defaultFrontalCascade() {
   const char *candidates[] = {
 #ifdef LOCKD_CASCADE_SRC_PATH
       LOCKD_CASCADE_SRC_PATH,   // source-tree path, works from build dir
@@ -98,6 +115,34 @@ std::string defaultCascade() {
   return {};
 }
 
+// Locates OpenCV's bundled profile cascade. OpenCV exposes its data directory as
+// cv::data::haarcascades when built with that helper; when it is unavailable we
+// fall back to probing the standard system install locations.
+std::string defaultProfileCascade() {
+  const char *name = "haarcascade_profileface.xml";
+#ifdef OPENCV_HAARCASCADES_DIR
+  {
+    std::string p = std::string(OPENCV_HAARCASCADES_DIR) + name;
+    if (access(p.c_str(), R_OK) == 0) {
+      return p;
+    }
+  }
+#endif
+  const char *dirs[] = {
+      "/usr/share/opencv4/haarcascades/",
+      "/usr/local/share/opencv4/haarcascades/",
+      "/usr/share/OpenCV/haarcascades/",
+      "/usr/local/share/OpenCV/haarcascades/",
+  };
+  for (const char *d : dirs) {
+    std::string p = std::string(d) + name;
+    if (access(p.c_str(), R_OK) == 0) {
+      return p;
+    }
+  }
+  return {};
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -105,23 +150,45 @@ int main(int argc, char **argv) {
   if (!parseArgs(argc, argv, opt)) {
     return 2;
   }
-  if (opt.cascade.empty()) {
-    opt.cascade = defaultCascade();
+  if (opt.frontalCascade.empty()) {
+    opt.frontalCascade = defaultFrontalCascade();
   }
-  if (opt.cascade.empty()) {
-    fprintf(stderr, "lockd: could not find a haar cascade; pass --cascade\n");
+  if (opt.frontalCascade.empty()) {
+    fprintf(stderr,
+            "lockd: could not find a frontal haar cascade; pass "
+            "--frontal-cascade\n");
     return 1;
   }
 
-  cv::CascadeClassifier cascade;
-  if (!cascade.load(opt.cascade)) {
-    fprintf(stderr, "lockd: failed to load cascade '%s'\n", opt.cascade.c_str());
+  cv::CascadeClassifier frontalCascade;
+  if (!frontalCascade.load(opt.frontalCascade)) {
+    fprintf(stderr, "lockd: failed to load frontal cascade '%s'\n",
+            opt.frontalCascade.c_str());
     return 1;
   }
 
+  if (opt.profileCascade.empty()) {
+    opt.profileCascade = defaultProfileCascade();
+  }
+  cv::CascadeClassifier profileCascade;
+  if (opt.profileCascade.empty()) {
+    fprintf(stderr,
+            "lockd: no profile cascade found, continuing with frontal-only "
+            "detection\n");
+  } else if (access(opt.profileCascade.c_str(), R_OK) != 0 ||
+             !profileCascade.load(opt.profileCascade)) {
+    fprintf(stderr,
+            "lockd: profile cascade '%s' unavailable, continuing with "
+            "frontal-only detection\n",
+            opt.profileCascade.c_str());
+    profileCascade = cv::CascadeClassifier();
+  }
+
+  const bool haveProfile = !profileCascade.empty();
   fprintf(stderr,
-          "lockd: sampling camera %d every %d s, locking when no face is seen\n",
-          opt.camera, opt.timeout_s);
+          "lockd: watching camera %d, locking after %ds without a face (%s)\n",
+          opt.camera, opt.timeout_s,
+          haveProfile ? "frontal + profile" : "frontal only");
 
   bool locked = false;
   const auto timeout = std::chrono::seconds(opt.timeout_s);
@@ -157,10 +224,27 @@ int main(int argc, char **argv) {
 
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
     cv::equalizeHist(gray, gray);
-    faces.clear();
-    cascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(40, 40));
 
-    if (!faces.empty()) {
+    faces.clear();
+    frontalCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(40, 40));
+    bool found = !faces.empty();
+
+    if (!found && !profileCascade.empty()) {
+      // Left profile.
+      profileCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(40, 40));
+      found = !faces.empty();
+    }
+
+    if (!found && !profileCascade.empty()) {
+      // Right profile (mirror the frame).
+      cv::Mat flipped;
+      cv::flip(gray, flipped, 1);
+      profileCascade.detectMultiScale(flipped, faces, 1.1, 3, 0,
+                                      cv::Size(40, 40));
+      found = !faces.empty();
+    }
+
+    if (found) {
       if (locked) {
         fprintf(stderr, "lockd: face detected again\n");
         locked = false;
