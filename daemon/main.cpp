@@ -20,17 +20,21 @@ struct Options {
   int camera = 0;
   std::string frontalCascade;
   std::string profileCascade;
+  std::string lock_cmd;
 };
 
 void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s [--timeout <seconds>] [--camera <index>] "
-          "[--frontal-cascade <path>] [--profile-cascade <path>]\n"
+          "[--frontal-cascade <path>] [--profile-cascade <path>] "
+          "[--lock-cmd <command>]\n"
           "  --timeout          seconds with no face before locking (default 30)\n"
           "  --camera           V4L2 camera index (default 0)\n"
           "  --frontal-cascade  frontal haar cascade XML path (default: bundled cascade)\n"
           "  --profile-cascade  profile haar cascade XML path (default: OpenCV data dir)\n"
-          "  --cascade          deprecated alias for --frontal-cascade\n",
+          "  --cascade          deprecated alias for --frontal-cascade\n"
+          "  --lock-cmd         custom lock command (with args) to run instead of\n"
+          "                     the auto-detected locker, e.g. \"swaylock -f\"\n",
           prog);
 }
 
@@ -81,6 +85,12 @@ bool parseArgs(int argc, char **argv, Options &opt) {
         return false;
       }
       opt.profileCascade = v;
+    } else if (strcmp(argv[i], "--lock-cmd") == 0) {
+      const char *v = takeArg(argc, argv, i);
+      if (v == nullptr) {
+        return false;
+      }
+      opt.lock_cmd = v;
     } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       usage(argv[0]);
       exit(0);
@@ -250,10 +260,10 @@ int main(int argc, char **argv) {
         locked = false;
       }
     } else if (!locked) {
-      if (lockd::sessionLocked()) {
-        locked = true;
-      } else if (lockd::triggerLock()) {
-        locked = true;
+      if (!opt.lock_cmd.empty()) {
+        locked = lockd::triggerLockCmd(opt.lock_cmd);
+      } else {
+        locked = lockd::sessionLocked() ? true : lockd::triggerLock();
       }
     }
   }

@@ -4,7 +4,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -137,6 +139,31 @@ bool triggerLock() {
   fprintf(stderr, "lockd: no usable locker found "
                   "(tried swaylock, hyprlock, loginctl)\n");
   return false;
+}
+
+bool triggerLockCmd(const std::string &cmd) {
+  std::vector<std::string> tokens;
+  std::istringstream iss(cmd);
+  std::string tok;
+  while (iss >> tok) {
+    tokens.push_back(tok);
+  }
+  if (tokens.empty()) {
+    fprintf(stderr, "lockd: --lock-cmd is empty\n");
+    return false;
+  }
+
+  std::vector<char *> argv;
+  argv.reserve(tokens.size() + 1);
+  for (std::string &t : tokens) {
+    argv.push_back(t.data());
+  }
+  argv.push_back(nullptr);
+
+  int rc = runAndWait(argv.data());
+  fprintf(stderr, "lockd: lock command '%s' exited with code %d\n", cmd.c_str(),
+          rc);
+  return rc == 0;
 }
 
 } // namespace lockd
