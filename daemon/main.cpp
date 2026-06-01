@@ -21,6 +21,7 @@ struct Options {
   std::string frontalCascade;
   std::string profileCascade;
   std::string lock_cmd;
+  bool debug = false;
 };
 
 void usage(const char *prog) {
@@ -34,7 +35,8 @@ void usage(const char *prog) {
           "  --profile-cascade  profile haar cascade XML path (default: OpenCV data dir)\n"
           "  --cascade          deprecated alias for --frontal-cascade\n"
           "  --lock-cmd         custom lock command (with args) to run instead of\n"
-          "                     the auto-detected locker, e.g. \"swaylock -f\"\n",
+          "                     the auto-detected locker, e.g. \"swaylock -f\"\n"
+          "  --debug            print per-cascade detection counts each round\n",
           prog);
 }
 
@@ -91,6 +93,8 @@ bool parseArgs(int argc, char **argv, Options &opt) {
         return false;
       }
       opt.lock_cmd = v;
+    } else if (strcmp(argv[i], "--debug") == 0) {
+      opt.debug = true;
     } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       usage(argv[0]);
       exit(0);
@@ -234,24 +238,40 @@ int main(int argc, char **argv) {
 
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
     cv::equalizeHist(gray, gray);
+    cv::Mat grayBlurred;
+    cv::GaussianBlur(gray, grayBlurred, cv::Size(3, 3), 0);
 
     faces.clear();
     frontalCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(40, 40));
+    int frontalCount = static_cast<int>(faces.size());
+    int profileLeftCount = 0;
+    int profileRightCount = 0;
     bool found = !faces.empty();
 
     if (!found && !profileCascade.empty()) {
       // Left profile.
-      profileCascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(40, 40));
+      profileCascade.detectMultiScale(grayBlurred, faces, 1.05, 2, 0,
+                                      cv::Size(30, 30));
+      profileLeftCount = static_cast<int>(faces.size());
       found = !faces.empty();
     }
 
     if (!found && !profileCascade.empty()) {
       // Right profile (mirror the frame).
       cv::Mat flipped;
-      cv::flip(gray, flipped, 1);
-      profileCascade.detectMultiScale(flipped, faces, 1.1, 3, 0,
-                                      cv::Size(40, 40));
+      cv::flip(grayBlurred, flipped, 1);
+      profileCascade.detectMultiScale(flipped, faces, 1.05, 2, 0,
+                                      cv::Size(30, 30));
+      profileRightCount = static_cast<int>(faces.size());
       found = !faces.empty();
+    }
+
+    if (opt.debug) {
+      fprintf(stderr,
+              "lockd: [debug] frontal=%d profile_left=%d profile_right=%d "
+              "\xE2\x86\x92 face %s (locked=%s)\n",
+              frontalCount, profileLeftCount, profileRightCount,
+              found ? "FOUND" : "ABSENT", locked ? "true" : "false");
     }
 
     if (found) {
