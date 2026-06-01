@@ -119,18 +119,10 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  cv::VideoCapture cap;
-  if (!cap.open(opt.camera, cv::CAP_V4L2) && !cap.open(opt.camera)) {
-    fprintf(stderr, "lockd: failed to open camera %d\n", opt.camera);
-    return 1;
-  }
-
   fprintf(stderr,
-          "lockd: watching camera %d, locking after %d s without a face\n",
+          "lockd: sampling camera %d every %d s, locking when no face is seen\n",
           opt.camera, opt.timeout_s);
 
-  using clock = std::chrono::steady_clock;
-  clock::time_point last_seen = clock::now();
   bool locked = false;
   const auto timeout = std::chrono::seconds(opt.timeout_s);
 
@@ -139,9 +131,27 @@ int main(int argc, char **argv) {
   std::vector<cv::Rect> faces;
 
   for (;;) {
-    if (!cap.read(frame) || frame.empty()) {
-      fprintf(stderr, "lockd: camera read failed, retrying\n");
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(timeout);
+
+    cv::VideoCapture cap;
+    if (!cap.open(opt.camera, cv::CAP_V4L2) && !cap.open(opt.camera)) {
+      fprintf(stderr, "lockd: failed to open camera %d, retrying next cycle\n",
+              opt.camera);
+      continue;
+    }
+
+    // Some cameras emit a black/empty first frame, so warm up before grabbing.
+    bool grabbed = false;
+    for (int i = 0; i < 3; ++i) {
+      grabbed = cap.grab();
+    }
+    if (grabbed) {
+      cap.retrieve(frame);
+    }
+    cap.release();
+
+    if (!grabbed || frame.empty()) {
+      fprintf(stderr, "lockd: camera read failed, retrying next cycle\n");
       continue;
     }
 
@@ -150,22 +160,18 @@ int main(int argc, char **argv) {
     faces.clear();
     cascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(40, 40));
 
-    const auto now = clock::now();
     if (!faces.empty()) {
-      last_seen = now;
       if (locked) {
         fprintf(stderr, "lockd: face detected again\n");
         locked = false;
       }
-    } else if (!locked && (now - last_seen) >= timeout) {
+    } else if (!locked) {
       if (lockd::sessionLocked()) {
         locked = true;
       } else if (lockd::triggerLock()) {
         locked = true;
       }
     }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
 
   return 0;
