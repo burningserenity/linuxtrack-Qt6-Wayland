@@ -26,6 +26,7 @@ target_compile_options(lockd PRIVATE -Wall -Wextra)
 
 target_compile_definitions(lockd PRIVATE
   LOCKD_CASCADE_PATH="${LOCKD_CASCADE_INSTALL_DIR}/${LOCKD_CASCADE_NAME}"
+  LOCKD_CASCADE_SRC_PATH="${LOCKD_CASCADE_SRC}"
 )
 
 target_include_directories(lockd PRIVATE ${OpenCV_INCLUDE_DIRS})

@@ -80,8 +80,11 @@ bool parseArgs(int argc, char **argv, Options &opt) {
 // the install location; a few common spots are tried as a fallback.
 std::string defaultCascade() {
   const char *candidates[] = {
+#ifdef LOCKD_CASCADE_SRC_PATH
+      LOCKD_CASCADE_SRC_PATH,   // source-tree path, works from build dir
+#endif
 #ifdef LOCKD_CASCADE_PATH
-      LOCKD_CASCADE_PATH,
+      LOCKD_CASCADE_PATH,       // installed path
 #endif
       "/usr/share/lockd/haarcascade_frontalface_alt2.xml",
       "/usr/local/share/lockd/haarcascade_frontalface_alt2.xml",
